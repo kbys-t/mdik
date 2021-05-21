@@ -41,12 +41,20 @@ constraints += ["mirror"]
 constraints += ["parameterized"]
 constraints += ["projected"]
 
+solvers = []
+solvers += ["cvxopt"]
+solvers += ["ecos"]
+solvers += ["osqp"]
+solvers += ["quadprog"]
+
 if "regulation" in task:
     n_trial = 2000
 elif "tracking" in task:
     n_trial = 500
 
 dt = 5e-3
+# dt_stop = dt
+dt_stop = 2.0e-3
 tmax = 2.5# i.e. 500 step
 if "regulation" in task:
     tperiod = 0.0
@@ -63,9 +71,11 @@ max_iter = 1000
 damp = 1e-3
 margin = 1e-2
 alpha = 1.0
-gain = alpha * 2.0 * np.log((1.0 - margin) / margin)
+gain = 2.0 * np.log((1.0 - margin) / margin)
 
-# weight = np.array([1.0]*3 + [1.0 / np.pi]*3)
+is_update_jacobian = False
+is_nesterov = True
+
 weight = np.array([1.0]*3 + [1.0]*3)
 weight *= len(weight) / weight.sum()
 

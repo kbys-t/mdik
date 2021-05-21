@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.7
+  - conda
   - numpy
   - scipy
   - scikit-learn
@@ -10,7 +11,7 @@ dependencies:
   - seaborn
   - pandas
   - panda3d_viewer
-  - pinocchio
+  - pinocchio=2.5.3
   - example-robot-data
   - ffmpeg
   - imagemagick
@@ -18,3 +19,7 @@ dependencies:
   - pip:
     - tqdm
     - statannot
+    - qpsolvers
+    - osqp
+    - cvxopt
+    - ecos

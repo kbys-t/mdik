@@ -20,12 +20,11 @@ def find_dataset(dirs, file_name):
 
 ######################################################
 def get_summary(files, func):
-    columns = ["task", "robot", "gradient", "constraint", "trial", "method"] + [func.__name__]
+    columns = ["task", "robot", "method", "trial"] + [func.__name__]
     summary = {key: [] for key in columns}
     for file in tqdm(files):
-        for key, val in zip(columns[0:-2], file.split("/")[2:-1]):
+        for key, val in zip(columns[0:-1], file.split("/")[2:-1]):
             summary[key].append(val)
-        summary["method"].append(summary["gradient"][-1] + "-" + summary["constraint"][-1])
         dat = pd.read_csv(file)
         summary[columns[-1]].append(func(dat))
     return pd.DataFrame(summary)

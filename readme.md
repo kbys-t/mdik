@@ -34,6 +34,5 @@ Or just run `bash test.bash`
     archivePrefix={arXiv},
     primaryClass={cs.RO},
     url={https://arxiv.org/abs/2101.07625},
-    note={(under review)},
 }
 ```

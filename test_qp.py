@@ -15,31 +15,15 @@ from pinocchio.visualize.panda3d_visualizer import Panda3dVisualizer
 from panda3d_viewer import ViewerClosedError
 from example_robot_data import robots_loader
 
+import qpsolvers
+from scipy.sparse.csc import csc_matrix
+
 from config import *
 np.seterr(all="warn" if is_debug else "ignore")
 
-######################################################
-class Nesterov:
-    def __init__(self, x0):
-        self.x_ = x0
-        self.rho = 1.0
-        self.gamma = 0.0
-
-    def __call__(self, model, x_new):
-        rho_new = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * self.rho**2))
-        self.gamma = (self.rho - 1.0) / rho_new
-        dx = pin.difference(model, self.x_, x_new)
-        rtv = pin.integrate(model, x_new, self.gamma * dx)
-        self.x_ = x_new
-        self.rho = rho_new
-        return rtv
-
-######################################################
-def normalize(model, q_, ql, dqul, margin):
-    q_normalize = (pin.difference(model, ql, q_) / dqul).clip(margin, 1.0 - margin)
-    q_normalize[dqul == 0.0] = 0.0
-    q_margin = pin.integrate(model, ql, q_normalize * dqul)
-    return q_margin, q_normalize
+if not is_debug:
+    import warnings
+    warnings.simplefilter("ignore", UserWarning)
 
 ######################################################
 # init robot and viewer
@@ -61,13 +45,13 @@ robot.viewer.append_capsule("world", "destination", radius=0.05, length=0.1)
 
 ######################################################
 # main process
-with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints)) as pbar:
-    for trial, gradient, constraint in pbar:
+with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
+    for trial, solver in pbar:
         # set random seed as trial number
         np.random.seed(trial)
 
         # make save directory and lists for storing data
-        sdir = "./result/" + task + "/" + name + "/" + gradient + "-" + constraint + "/" + str(trial) + "/"
+        sdir = "./result/" + task + "/" + name + "/" + solver + "/" + str(trial) + "/"
         os.makedirs(sdir, exist_ok=True)
         images = []
         times = []
@@ -125,54 +109,21 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
             qp = pin.integrate(robot.model, q0,   robot.model.velocityLimit * dt)
             ql = np.maximum(robot.model.lowerPositionLimit, np.minimum(qm, qp))
             qu = np.minimum(robot.model.upperPositionLimit, np.maximum(qm, qp))
-            dqul = pin.difference(robot.model, ql, qu)
-            # iteration until time up or convergence
+            # formulation
             ts = time.time()
-            if is_nesterov:
-                accel = Nesterov(q0)
-            if not is_update_jacobian:
-                dM = robot.placement(q_, id_ee, True).actInv(oMdes)
-                err0 = pin.log(dM).vector
-                J_ = robot.computeJointJacobian(q0, id_ee)
-                JTw = J_.T * weight.reshape(1, -1)
-            for iter in range(max_iter):
-                # to satisfy hard-soft limitations
-                q_, qn = normalize(robot.model, q_, ql, dqul, margin)
-                # compute error (true in placement is for forwardkinematics flag)
-                if is_update_jacobian:
-                    dM = robot.placement(q_, id_ee, True).actInv(oMdes)
-                    err = pin.log(dM).vector
-                else:
-                    err = err0 - J_.dot(pin.difference(robot.model, q0, q_))
-                loss = 0.5 * (err * weight * err).sum()
-                # check termination
-                if (iter > 0 and loss < eps_err) or (is_timelimit and time.time() - ts >= dt_stop):
-                    break
-                else:
-                    # compute gradient
-                    if is_update_jacobian:
-                        J_ = robot.computeJointJacobian(q_, id_ee)
-                        JTw = J_.T * weight.reshape(1, -1)
-                    if "LM" in gradient:
-                        g_ = - JTw.dot(np.linalg.solve(J_.dot(JTw) + (damp + loss) * np.eye(6), err))
-                    elif "JT" in gradient:
-                        g_ = - JTw.dot(err)
-                    # constraint
-                    if "projected" in constraint:
-                        q_ = pin.integrate(robot.model, q_, - alpha * g_).clip(ql, qu)
-                    else:
-                        # special case with sigmoid function
-                        if "parameterized" in constraint:
-                            eg = np.exp((alpha * gain)**2 * g_ * dqul * qn * (1.0 - qn))
-                        elif "mirror" in constraint:
-                            eg = np.exp(alpha * gain * g_)
-                        diff = (1.0 - qn) * (1.0 - eg)/ (qn + (1.0 - qn) * eg)
-                        diff[eg == float("inf")] = -1.0
-                        q_ = pin.integrate(robot.model, q_, dqul * qn * diff)
-                    if is_nesterov:
-                        q_ = accel(robot.model, q_)
+            dM = robot.placement(q0, id_ee, True).actInv(oMdes)
+            err = pin.log(dM).vector
+            J_ = robot.computeJointJacobian(q0, id_ee)
+            WJ = weight.reshape(-1, 1) * J_
+            C_ = J_.T.dot(WJ) + damp * np.eye(J_.shape[1])
+            c_ = - (err.reshape(1, -1).dot(WJ)).flatten()
+            lb = pin.difference(robot.model, q0, ql)
+            ub = pin.difference(robot.model, q0, qu)
+            # solve
+            dq = qpsolvers.solve_qp(C_, c_, None, None, None, None, lb, ub, solver=solver)
+            q_ = pin.integrate(robot.model, q0, dq)
             # save results
-            times.append([time.time() - ts, iter])
+            times.append([time.time() - ts, 1])
             # check whether success or not finally
             dM = robot.placement(q_, id_ee, True).actInv(oMdes)
             err = pin.log(dM).vector
@@ -204,7 +155,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                 res = np.linalg.norm(np.array(errors)[int(tmax / dt):], axis=1).mean()
             else:
                 res = np.linalg.norm(err)
-        pbar.set_postfix({"trial": trial, "method": gradient + "-" + constraint, "result": res})
+        pbar.set_postfix({"trial": trial, "method": solver, "result": res})
         if is_debug:
             print("result of {}\n\ttarget: {}\n\tfinal error: {}\n\tresult: {}".format(sdir, pin.SE3ToXYZQUATtuple(oMdes), err.tolist(), res))
             print("\n\tjoints: {}".format(q_.flatten().tolist()))
