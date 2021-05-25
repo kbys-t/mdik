@@ -19,27 +19,54 @@ from config import *
 np.seterr(all="warn" if is_debug else "ignore")
 
 ######################################################
-class Nesterov:
-    def __init__(self, x0):
-        self.x_ = x0
-        self.rho = 1.0
-        self.gamma = 0.0
+def solver_projected(model, q_, g_, step_size, ql, qu, dqul, qn):
+    return pin.integrate(model, q_, - step_size * g_).clip(ql, qu)
 
-    def __call__(self, model, x_new):
-        rho_new = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * self.rho**2))
-        self.gamma = (self.rho - 1.0) / rho_new
-        dx = pin.difference(model, self.x_, x_new)
-        rtv = pin.integrate(model, x_new, self.gamma * dx)
-        self.x_ = x_new
-        self.rho = rho_new
-        return rtv
+def solver_parameterized(model, q_, g_, step_size, ql, qu, dqul, qn):
+    eg = np.exp((step_size * gain)**2 * g_ * dqul * qn * (1.0 - qn))
+    return pin.integrate(model, q_, _fnc(dqul, qn, eg))
+
+def solver_mirror(model, q_, g_, step_size, ql, qu, dqul, qn):
+    eg = np.exp(step_size * gain * g_)
+    return pin.integrate(model, q_, _fnc(dqul, qn, eg))
 
 ######################################################
-def normalize(model, q_, ql, dqul, margin):
+def _fnc(dqul, qn, eg):
+    tmp = qn * (1.0 - eg)
+    diff = dqul * (tmp * (1.0 - qn)) / (tmp + eg)
+    diff[~np.isfinite(diff)] = 0.0
+    return diff
+
+######################################################
+def normalize(model, q_, ql, dqul, mask, margin):
     q_normalize = (pin.difference(model, ql, q_) / dqul).clip(margin, 1.0 - margin)
-    q_normalize[dqul == 0.0] = 0.0
+    q_normalize[mask] = 0.0
     q_margin = pin.integrate(model, ql, q_normalize * dqul)
     return q_margin, q_normalize
+
+######################################################
+class Accelerator:
+    # see: https://papers.nips.cc/paper/2015/hash/f60bb6bb4c96d4df93c51bd69dcc15a0-Abstract.html
+    def __init__(self, solver, z_, r_=3.0, gamma=1.0, active=True):
+        self.active = active
+        if self.active:
+            self.solver = solver
+            self.z_ = z_
+            self.r_ = r_
+            self.gamma = gamma / r_
+            self.k_ = 1.0
+
+    def __call__(self, model, q_, g_, step_size, ql, qu, dqul):
+        if self.active:
+            # wo software margin
+            zn = pin.difference(model, ql, self.z_) / dqul
+            # update
+            self.z_ = self.solver(model, self.z_, g_, (self.k_ * step_size) / (self.gamma * self.r_), ql, qu, dqul, zn)
+            lambd = self.r_ / (self.r_ + self.k_)
+            self.k_ += 1.0
+            return lambd * self.z_ + (1.0 - lambd) * q_
+        else:
+            return q_
 
 ######################################################
 # init robot and viewer
@@ -75,6 +102,14 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
         trajs = []
         errors = []
         qs = []
+
+        # set solver
+        if "projected" in constraint:
+            solver = solver_projected
+        elif "parameterized" in constraint:
+            solver = solver_parameterized
+        elif "mirror" in constraint:
+            solver = solver_mirror
 
         # init robot
         q0 = pin.neutral(robot.model)
@@ -120,33 +155,31 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                 robot.viewer.move_nodes("world", {"destination": (tar[:3], tar[-1:] + tar[3:6])})
                 robot.display(q0)
             success = False
+            ts = time.time()
             # make limitation
             qm = pin.integrate(robot.model, q0, - robot.model.velocityLimit * dt)
             qp = pin.integrate(robot.model, q0,   robot.model.velocityLimit * dt)
             ql = np.maximum(robot.model.lowerPositionLimit, np.minimum(qm, qp))
             qu = np.minimum(robot.model.upperPositionLimit, np.maximum(qm, qp))
             dqul = pin.difference(robot.model, ql, qu)
+            mask = (dqul == 0.0)
             # iteration until time up or convergence
-            ts = time.time()
-            if is_nesterov:
-                accel = Nesterov(q0)
+            accelerator = Accelerator(solver, q0, accel, active=is_accel)
             if not is_update_jacobian:
-                dM = robot.placement(q_, id_ee, True).actInv(oMdes)
-                err0 = pin.log(dM).vector
+                err0 = pin.log(robot.placement(q0, id_ee, True).actInv(oMdes)).vector
                 J_ = robot.computeJointJacobian(q0, id_ee)
                 JTw = J_.T * weight.reshape(1, -1)
             for iter in range(max_iter):
-                # to satisfy hard-soft limitations
-                q_, qn = normalize(robot.model, q_, ql, dqul, margin)
                 # compute error (true in placement is for forwardkinematics flag)
                 if is_update_jacobian:
-                    dM = robot.placement(q_, id_ee, True).actInv(oMdes)
-                    err = pin.log(dM).vector
-                else:
+                    err = pin.log(robot.placement(q_, id_ee, True).actInv(oMdes)).vector
+                elif iter:
                     err = err0 - J_.dot(pin.difference(robot.model, q0, q_))
+                else:
+                    err = err0
                 loss = 0.5 * (err * weight * err).sum()
                 # check termination
-                if (iter > 0 and loss < eps_err) or (is_timelimit and time.time() - ts >= dt_stop):
+                if (iter and loss < eps_err) or (is_timelimit and time.time() - ts >= dt_stop):
                     break
                 else:
                     # compute gradient
@@ -154,28 +187,18 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                         J_ = robot.computeJointJacobian(q_, id_ee)
                         JTw = J_.T * weight.reshape(1, -1)
                     if "LM" in gradient:
-                        g_ = - JTw.dot(np.linalg.solve(J_.dot(JTw) + (damp + loss) * np.eye(6), err))
-                    elif "JT" in gradient:
-                        g_ = - JTw.dot(err)
-                    # constraint
-                    if "projected" in constraint:
-                        q_ = pin.integrate(robot.model, q_, - alpha * g_).clip(ql, qu)
-                    else:
-                        # special case with sigmoid function
-                        if "parameterized" in constraint:
-                            eg = np.exp((alpha * gain)**2 * g_ * dqul * qn * (1.0 - qn))
-                        elif "mirror" in constraint:
-                            eg = np.exp(alpha * gain * g_)
-                        diff = (1.0 - qn) * (1.0 - eg)/ (qn + (1.0 - qn) * eg)
-                        diff[eg == float("inf")] = -1.0
-                        q_ = pin.integrate(robot.model, q_, dqul * qn * diff)
-                    if is_nesterov:
-                        q_ = accel(robot.model, q_)
+                        err = np.linalg.solve(J_.dot(JTw) + (damp + loss) * np.eye(6), err)
+                    g_ = - JTw.dot(err)
+                    # to satisfy software limitations
+                    q_, qn = normalize(robot.model, q_, ql, dqul, mask, margin)
+                    # update under constraint
+                    q_ = solver(robot.model, q_, g_, step_size, ql, qu, dqul, qn)
+                    # replace by accelerator
+                    q_ = accelerator(robot.model, q_, g_, step_size, ql, qu, dqul)
             # save results
             times.append([time.time() - ts, iter])
             # check whether success or not finally
-            dM = robot.placement(q_, id_ee, True).actInv(oMdes)
-            err = pin.log(dM).vector
+            err = pin.log(robot.placement(q_, id_ee, True).actInv(oMdes)).vector
             loss = 0.5 * (err * weight * err).sum()
             if loss < eps_err:
                 success = True
@@ -194,6 +217,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                 if is_record and trial % trial_skip == 1:
                     images.append(robot.viewer.get_screenshot()[:, :, [2, 1, 0]])
             q0 = q_.copy()
+
         # save results
         if "regulation" in task:
             # success or not at the end

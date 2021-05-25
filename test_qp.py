@@ -45,6 +45,7 @@ robot.viewer.append_capsule("world", "destination", radius=0.05, length=0.1)
 
 ######################################################
 # main process
+print("available qp solvers: {}".format(qpsolvers.available_solvers))
 with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
     for trial, solver in pbar:
         # set random seed as trial number
@@ -104,15 +105,14 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
                 robot.viewer.move_nodes("world", {"destination": (tar[:3], tar[-1:] + tar[3:6])})
                 robot.display(q0)
             success = False
+            ts = time.time()
             # make limitation
             qm = pin.integrate(robot.model, q0, - robot.model.velocityLimit * dt)
             qp = pin.integrate(robot.model, q0,   robot.model.velocityLimit * dt)
             ql = np.maximum(robot.model.lowerPositionLimit, np.minimum(qm, qp))
             qu = np.minimum(robot.model.upperPositionLimit, np.maximum(qm, qp))
             # formulation
-            ts = time.time()
-            dM = robot.placement(q0, id_ee, True).actInv(oMdes)
-            err = pin.log(dM).vector
+            err = pin.log(robot.placement(q0, id_ee, True).actInv(oMdes)).vector
             J_ = robot.computeJointJacobian(q0, id_ee)
             WJ = weight.reshape(-1, 1) * J_
             C_ = J_.T.dot(WJ) + damp * np.eye(J_.shape[1])
@@ -120,13 +120,12 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
             lb = pin.difference(robot.model, q0, ql)
             ub = pin.difference(robot.model, q0, qu)
             # solve
-            dq = qpsolvers.solve_qp(C_, c_, None, None, None, None, lb, ub, solver=solver)
+            dq = qpsolvers.solve_qp(C_, c_, None, None, None, None, lb, ub, solver=solver, time_limit=dt_stop if is_timelimit else 0.0)
             q_ = pin.integrate(robot.model, q0, dq)
             # save results
             times.append([time.time() - ts, 1])
             # check whether success or not finally
-            dM = robot.placement(q_, id_ee, True).actInv(oMdes)
-            err = pin.log(dM).vector
+            err = pin.log(robot.placement(q_, id_ee, True).actInv(oMdes)).vector
             loss = 0.5 * (err * weight * err).sum()
             if loss < eps_err:
                 success = True
@@ -145,6 +144,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
                 if is_record and trial % trial_skip == 1:
                     images.append(robot.viewer.get_screenshot()[:, :, [2, 1, 0]])
             q0 = q_.copy()
+
         # save results
         if "regulation" in task:
             # success or not at the end
