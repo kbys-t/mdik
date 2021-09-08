@@ -65,49 +65,49 @@ fig = plt.figure(figsize=(8, 6))
 # hue_order = None
 hue_order = ["OSQP", "LM", "MD", "AMD", "SAMD"]
 
-# ### for regulation
-# dir = "./result/regulation/"
-#
-# # load success
-# files = sorted(find_dataset([dir], "success"))
-# def success_rate(dat):
-#     return dat.values[-1, -1]
-# summary = get_summary(files, success_rate)
-#
-# # make valid flag
-# def judge_success(dat):
-#     return dat.sum() > 0
-# flag = get_valid(summary, judge_success, summary.columns[-1])
-# print("length of valid data: {}".format(len(flag[flag["valid"] == True])))
-#
-# # record success
-# save_data(summary, flag, dir[:-1], hue_order)
-#
-# # mean error
-# files = sorted(find_dataset([dir], "error"))
-# def mean_error(dat):
-#     return np.linalg.norm(dat.values, axis=1).mean()
-# save_data(get_summary(files, mean_error), flag, dir[:-1], hue_order)
-#
-# # joint smoothness
-# files = sorted(find_dataset([dir], "q"))
-# def joint_smoothness(dat):
-#     return np.linalg.norm(np.diff(dat.values, axis=0), axis=1).mean()
-# save_data(get_summary(files, joint_smoothness), flag, dir[:-1], hue_order)
-#
-# # number of iterations
-# files = sorted(find_dataset([dir], "time"))
-# def iteration(dat):
-#     return dat.loc[1:21, "iter"].values.mean()
-# save_data(get_summary(files, iteration), flag, dir[:-1], hue_order)
-#
-# # computational time
-# def milliseconds(dat):
-#     return dat.loc[1:21, "time"].values.mean() * 1e+3
-# save_data(get_summary(files, milliseconds), flag, dir[:-1], hue_order)
+### for regulation
+dir = "./result/regulation/"
+
+# load success
+files = sorted(find_dataset([dir], "success"))
+def success_rate(dat):
+    return dat.values[-1, -1]
+summary = get_summary(files, success_rate)
+
+# make valid flag
+def judge_success(dat):
+    return dat.sum() > 0
+flag = get_valid(summary, judge_success, summary.columns[-1])
+print("length of valid data: {}".format(len(flag[flag["valid"] == True])))
+
+# record success
+save_data(summary, flag, dir[:-1], hue_order)
+
+# mean error
+files = sorted(find_dataset([dir], "error"))
+def mean_error(dat):
+    return np.linalg.norm(dat.values, axis=1).mean()
+save_data(get_summary(files, mean_error), flag, dir[:-1], hue_order)
+
+# joint smoothness
+files = sorted(find_dataset([dir], "q"))
+def joint_smoothness(dat):
+    return np.linalg.norm(np.diff(dat.values, axis=0), axis=1).mean()
+save_data(get_summary(files, joint_smoothness), flag, dir[:-1], hue_order)
+
+# number of iterations
+files = sorted(find_dataset([dir], "time"))
+def iteration(dat):
+    return dat.loc[1:21, "iter"].values.mean()
+save_data(get_summary(files, iteration), flag, dir[:-1], hue_order)
+
+# computational time
+def milliseconds(dat):
+    return dat.loc[1:21, "time"].values.mean() * 1e+3
+save_data(get_summary(files, milliseconds), flag, dir[:-1], hue_order)
 
 ### for tracking
-dir = "./result_2.5e-3/tracking/"
+dir = "./result/tracking/"
 
 # load mean error
 files = sorted(find_dataset([dir], "error"))
