@@ -46,13 +46,13 @@ robot.viewer.append_capsule("world", "destination", radius=0.05, length=0.1)
 ######################################################
 # main process
 print("available qp solvers: {}".format(qpsolvers.available_solvers))
-with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
-    for trial, solver in pbar:
+with tqdm(itertools.product(range(n_resume+1, n_trial+1), qp_solvers)) as pbar:
+    for trial, method in pbar:
         # set random seed as trial number
         np.random.seed(trial)
 
         # make save directory and lists for storing data
-        sdir = "./result/" + task + "/" + name + "/" + solver + "/" + str(trial) + "/"
+        sdir = "./result/" + task + "/" + name + "/" + method + "/" + str(trial) + "/"
         os.makedirs(sdir, exist_ok=True)
         images = []
         times = []
@@ -120,8 +120,11 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
             lb = pin.difference(robot.model, q0, ql)
             ub = pin.difference(robot.model, q0, qu)
             # solve
-            dq = qpsolvers.solve_qp(C_, c_, None, None, None, None, lb, ub, solver=solver, time_limit=dt_stop if is_timelimit else 0.0)
-            q_ = pin.integrate(robot.model, q0, dq)
+            time_limit = dt_stop - (time.time() - ts)
+            if time_limit > 0.0 or not is_timelimit:
+                dq = qpsolvers.solve_qp(C_, c_, None, None, None, None, lb, ub, solver=method, time_limit=time_limit if is_timelimit else 0.0)
+                if dq is not None:
+                    q_ = pin.integrate(robot.model, q0, dq.clip(lb, ub))
             # save results
             times.append([time.time() - ts, 1])
             # check whether success or not finally
@@ -155,7 +158,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), solvers)) as pbar:
                 res = np.linalg.norm(np.array(errors)[int(tmax / dt):], axis=1).mean()
             else:
                 res = np.linalg.norm(err)
-        pbar.set_postfix({"trial": trial, "method": solver, "result": res})
+        pbar.set_postfix({"trial": trial, "method": method, "result": res})
         if is_debug:
             print("result of {}\n\ttarget: {}\n\tfinal error: {}\n\tresult: {}".format(sdir, pin.SE3ToXYZQUATtuple(oMdes), err.tolist(), res))
             print("\n\tjoints: {}".format(q_.flatten().tolist()))

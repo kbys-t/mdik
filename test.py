@@ -18,24 +18,39 @@ from example_robot_data import robots_loader
 from config import *
 np.seterr(all="warn" if is_debug else "ignore")
 
+from numba import njit
+
 ######################################################
 def solver_projected(model, q_, g_, step_size, ql, qu, dqul, qn):
     return pin.integrate(model, q_, - step_size * g_).clip(ql, qu)
 
 def solver_parameterized(model, q_, g_, step_size, ql, qu, dqul, qn):
-    eg = np.exp((step_size * gain)**2 * g_ * dqul * qn * (1.0 - qn))
-    return pin.integrate(model, q_, _fnc(dqul, qn, eg))
+    return pin.integrate(model, q_, _diff_parameterized(g_, step_size, dqul, qn))
 
 def solver_mirror(model, q_, g_, step_size, ql, qu, dqul, qn):
-    eg = np.exp(step_size * gain * g_)
-    return pin.integrate(model, q_, _fnc(dqul, qn, eg))
+    return pin.integrate(model, q_, _diff_mirror(g_, step_size, dqul, qn))
 
 ######################################################
-def _fnc(dqul, qn, eg):
+@njit
+def _diff_parameterized(g_, step_size, dqul, qn):
+    eg = np.exp((step_size * gain)**2 * g_ * dqul * qn * (1.0 - qn))
     tmp = qn * (1.0 - eg)
     diff = dqul * (tmp * (1.0 - qn)) / (tmp + eg)
     diff[~np.isfinite(diff)] = 0.0
     return diff
+
+@njit
+def _diff_mirror(g_, step_size, dqul, qn):
+    eg = np.exp(step_size * gain * g_)
+    tmp = qn * (1.0 - eg)
+    diff = dqul * (tmp * (1.0 - qn)) / (tmp + eg)
+    diff[~np.isfinite(diff)] = 0.0
+    return diff
+
+@njit
+def _interp(q1, q2, ratio):
+    lambd = 1.0 / (1.0 + ratio)
+    return lambd * q1 + (1.0 - lambd) * q2
 
 ######################################################
 def normalize(model, q_, ql, dqul, mask, margin):
@@ -47,24 +62,29 @@ def normalize(model, q_, ql, dqul, mask, margin):
 ######################################################
 class Accelerator:
     # see: https://papers.nips.cc/paper/2015/hash/f60bb6bb4c96d4df93c51bd69dcc15a0-Abstract.html
-    def __init__(self, solver, z_, r_=3.0, gamma=1.0, active=True):
-        self.active = active
+    def __init__(self, solver, accel=3.0, gamma=1.0, step_size=1.0, smooth_reset=0.0):
+        self.active = accel >= 3.0
         if self.active:
             self.solver = solver
-            self.z_ = z_
-            self.r_ = r_
-            self.gamma = gamma / r_
-            self.k_ = 1.0
+            self.accel_inv = 1.0 / accel
+            self.step_size = step_size / gamma
+            self.smooth_reset = (smooth_reset, 1.0 - smooth_reset)
+            self.z_ = None
+            self.ratio = 0.0
 
-    def __call__(self, model, q_, g_, step_size, ql, qu, dqul):
+    def reset(self, z_, ql, qu, dqul):
         if self.active:
-            # wo software margin
-            zn = pin.difference(model, ql, self.z_) / dqul
-            # update
-            self.z_ = self.solver(model, self.z_, g_, (self.k_ * step_size) / (self.gamma * self.r_), ql, qu, dqul, zn)
-            lambd = self.r_ / (self.r_ + self.k_)
-            self.k_ += 1.0
-            return lambd * self.z_ + (1.0 - lambd) * q_
+            self.z_ = z_ if self.z_ is None or self.smooth_reset[0] == 0.0 else (self.smooth_reset[0] * self.z_ + self.smooth_reset[1] * z_).clip(ql, qu)
+            self.ql = ql
+            self.qu = qu
+            self.dqul = dqul
+            self.ratio *= self.smooth_reset[0]
+
+    def __call__(self, model, q_, g_):
+        if self.active:
+            self.ratio += self.accel_inv
+            self.z_ = self.solver(model, self.z_, g_, self.ratio * self.step_size, self.ql, self.qu, self.dqul, self.dqul)
+            return _interp(self.z_, q_, self.ratio)
         else:
             return q_
 
@@ -88,13 +108,13 @@ robot.viewer.append_capsule("world", "destination", radius=0.05, length=0.1)
 
 ######################################################
 # main process
-with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints)) as pbar:
-    for trial, gradient, constraint in pbar:
+with tqdm(itertools.product(range(n_resume+1, n_trial+1), gc_solvers)) as pbar:
+    for trial, method in pbar:
         # set random seed as trial number
         np.random.seed(trial)
 
         # make save directory and lists for storing data
-        sdir = "./result/" + task + "/" + name + "/" + gradient + "-" + constraint + "/" + str(trial) + "/"
+        sdir = "./result/" + task + "/" + name + "/" + method + "/" + str(trial) + "/"
         os.makedirs(sdir, exist_ok=True)
         images = []
         times = []
@@ -104,12 +124,13 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
         qs = []
 
         # set solver
-        if "projected" in constraint:
+        if "projected" in method:
             solver = solver_projected
-        elif "parameterized" in constraint:
+        elif "parameterized" in method:
             solver = solver_parameterized
-        elif "mirror" in constraint:
+        elif "mirror" in method:
             solver = solver_mirror
+        accelerator = Accelerator(solver_projected, accel if "accelerated" in method else 0.0, gain_step_size, step_size, smooth_reset if "smooth" in method else 0.0)
 
         # init robot
         q0 = pin.neutral(robot.model)
@@ -164,7 +185,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
             dqul = pin.difference(robot.model, ql, qu)
             mask = (dqul == 0.0)
             # iteration until time up or convergence
-            accelerator = Accelerator(solver, q0, accel, active=is_accel)
+            accelerator.reset(q0, ql, qu, dqul)
             if not is_update_jacobian:
                 err0 = pin.log(robot.placement(q0, id_ee, True).actInv(oMdes)).vector
                 J_ = robot.computeJointJacobian(q0, id_ee)
@@ -186,7 +207,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                     if is_update_jacobian:
                         J_ = robot.computeJointJacobian(q_, id_ee)
                         JTw = J_.T * weight.reshape(1, -1)
-                    if "LM" in gradient:
+                    if "LM" in method:
                         err = np.linalg.solve(J_.dot(JTw) + (damp + loss) * np.eye(6), err)
                     g_ = - JTw.dot(err)
                     # to satisfy software limitations
@@ -194,7 +215,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                     # update under constraint
                     q_ = solver(robot.model, q_, g_, step_size, ql, qu, dqul, qn)
                     # replace by accelerator
-                    q_ = accelerator(robot.model, q_, g_, step_size, ql, qu, dqul)
+                    q_ = accelerator(robot.model, q_, g_)
             # save results
             times.append([time.time() - ts, iter])
             # check whether success or not finally
@@ -228,7 +249,7 @@ with tqdm(itertools.product(range(n_resume+1, n_trial+1), gradients, constraints
                 res = np.linalg.norm(np.array(errors)[int(tmax / dt):], axis=1).mean()
             else:
                 res = np.linalg.norm(err)
-        pbar.set_postfix({"trial": trial, "method": gradient + "-" + constraint, "result": res})
+        pbar.set_postfix({"trial": trial, "method": method, "result": res})
         if is_debug:
             print("result of {}\n\ttarget: {}\n\tfinal error: {}\n\tresult: {}".format(sdir, pin.SE3ToXYZQUATtuple(oMdes), err.tolist(), res))
             print("\n\tjoints: {}".format(q_.flatten().tolist()))

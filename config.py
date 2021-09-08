@@ -2,6 +2,7 @@
 
 import argparse
 import numpy as np
+import itertools
 
 ######################################################
 # init parameters
@@ -53,18 +54,27 @@ weight = np.array([1.0]*3 + [1.0]*3)
 weight *= len(weight) / weight.sum()
 
 # solvers
-gradients = []
-gradients += ["JT"]
-gradients += ["LM"]
+# gradients = []
+# gradients += ["JT"]
+# gradients += ["LM"]
+#
+# constraints = []
+# constraints += ["mirror"]
+# constraints += ["parameterized"]
+# constraints += ["projected"]
+#
+# gc_solvers = list([gradient + "-" + constraint for gradient, constraint in itertools.product(gradients, constraints)])
 
-constraints = []
-constraints += ["mirror"]
-constraints += ["parameterized"]
-constraints += ["projected"]
+gc_solvers = []
+gc_solvers += ["LM-projected"]
+gc_solvers += ["JT-mirror"]
+gc_solvers += ["JT-mirror-accelerated"]
+gc_solvers += ["JT-mirror-accelerated-smooth"]
 
-solvers = []
-solvers += ["osqp"]
-solvers += ["qpoases"]
+
+qp_solvers = []
+qp_solvers += ["osqp"]
+# qp_solvers += ["qpoases"]
 
 # parameters
 damp = 1e-3
@@ -72,16 +82,20 @@ margin = 1e-2
 step_size = 1.0
 gain = 2.0 * np.log((1.0 - margin) / margin)
 
-is_update_jacobian = True
-accel = 10.0
-is_accel = accel >= 3.0
+is_update_jacobian = False
+accel = 5.0
+gain_step_size = 2.0
+smooth_reset = 0.5
 
 # termination conditions
 eps_err = 1e-10
 max_iter = 1000
+
 is_timelimit = True
 # dt_stop = dt
-dt_stop = 2.5e-3
+# dt_stop = 2.5e-3
+# dt_stop = 1e-3
+dt_stop = 5e-4
 
 # save flags
 is_debug = False
