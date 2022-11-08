@@ -1,20 +1,27 @@
-name: pino
+name: mdik
 channels:
   - conda-forge
 dependencies:
   - python=3.7
+  - conda
   - numpy
+  - numba
+  - cython
   - scipy
   - scikit-learn
   - matplotlib
   - seaborn
   - pandas
   - panda3d_viewer
-  - pinocchio
+  - pinocchio=2.5.3
   - example-robot-data
   - ffmpeg
   - imagemagick
+  - tqdm
+  - osqp
   - pip
   - pip:
-    - tqdm
-    - statannot
+    - setuptools
+    - wheel
+    - quadprog
+    - pybullet

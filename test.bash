@@ -19,4 +19,5 @@ for task in "${tasks[@]}" ; do
   done
 done
 
+python rename.py
 python eval.py

@@ -20,12 +20,11 @@ def find_dataset(dirs, file_name):
 
 ######################################################
 def get_summary(files, func):
-    columns = ["task", "robot", "gradient", "constraint", "trial", "method"] + [func.__name__]
+    columns = ["task", "robot", "method", "trial"] + [func.__name__]
     summary = {key: [] for key in columns}
     for file in tqdm(files):
-        for key, val in zip(columns[0:-2], file.split("/")[2:-1]):
+        for key, val in zip(columns[0:-1], file.split("/")[2:-1]):
             summary[key].append(val)
-        summary["method"].append(summary["gradient"][-1] + "-" + summary["constraint"][-1])
         dat = pd.read_csv(file)
         summary[columns[-1]].append(func(dat))
     return pd.DataFrame(summary)
@@ -42,12 +41,12 @@ def get_valid(dat, judge, name):
     return flag
 
 ######################################################
-def save_data(dat, flag, name):
+def save_data(dat, flag, name, hue_order):
     ylabel = dat.columns[-1]
     dat_valid = dat.loc[flag["valid"] == True]
     plt.clf()
-    sns.boxenplot(x="robot", y=ylabel, hue="method", data=dat_valid, showfliers=False)
-    plt.legend(bbox_to_anchor=(0.5, 1.175), loc="upper center", frameon=True, ncol=3)
+    sns.boxenplot(x="robot", y=ylabel, hue="method", hue_order=hue_order, data=dat_valid, showfliers=False)
+    plt.legend(bbox_to_anchor=(0.5, 1.175), loc="upper center", frameon=True, ncol=5)
     plt.savefig(name + "_" + ylabel + ".pdf")
     with open(name + "_" + ylabel + ".txt", "w") as f_:
         for robot, method in itertools.product(dat_valid["robot"].unique(), dat_valid["method"].unique()):
@@ -62,6 +61,9 @@ sns.set_palette("Set2", 8, 1)
 colors = sns.color_palette(n_colors=10)
 markers = ["o", "s", "d", "*", "+", "x", "v", "^", "<", ">"]
 fig = plt.figure(figsize=(8, 6))
+
+# hue_order = None
+hue_order = ["OSQP", "LM", "MD", "AMD", "SAMD"]
 
 ### for regulation
 dir = "./result/regulation/"
@@ -79,25 +81,30 @@ flag = get_valid(summary, judge_success, summary.columns[-1])
 print("length of valid data: {}".format(len(flag[flag["valid"] == True])))
 
 # record success
-save_data(summary, flag, dir[:-1])
-
-# number of iterations
-files = sorted(find_dataset([dir], "time"))
-def iteration(dat):
-    return dat.head(10)["iter"].values.mean()
-save_data(get_summary(files, iteration), flag, dir[:-1])
+save_data(summary, flag, dir[:-1], hue_order)
 
 # mean error
 files = sorted(find_dataset([dir], "error"))
 def mean_error(dat):
     return np.linalg.norm(dat.values, axis=1).mean()
-save_data(get_summary(files, mean_error), flag, dir[:-1])
+save_data(get_summary(files, mean_error), flag, dir[:-1], hue_order)
 
 # joint smoothness
 files = sorted(find_dataset([dir], "q"))
 def joint_smoothness(dat):
     return np.linalg.norm(np.diff(dat.values, axis=0), axis=1).mean()
-save_data(get_summary(files, joint_smoothness), flag, dir[:-1])
+save_data(get_summary(files, joint_smoothness), flag, dir[:-1], hue_order)
+
+# number of iterations
+files = sorted(find_dataset([dir], "time"))
+def iteration(dat):
+    return dat.loc[1:21, "iter"].values.mean()
+save_data(get_summary(files, iteration), flag, dir[:-1], hue_order)
+
+# computational time
+def milliseconds(dat):
+    return dat.loc[1:21, "time"].values.mean() * 1e+3
+save_data(get_summary(files, milliseconds), flag, dir[:-1], hue_order)
 
 ### for tracking
 dir = "./result/tracking/"
@@ -109,22 +116,33 @@ def mean_error(dat):
 summary = get_summary(files, mean_error)
 
 # make valid flag
-def judge_threshold(dat, threshold=1.0):
+def judge_threshold(dat, threshold=0.1):
     return all(dat < threshold)
 flag = get_valid(summary, judge_threshold, summary.columns[-1])
 print("length of valid data: {}".format(len(flag[flag["valid"] == True])))
 
 # record mean error
-save_data(summary, flag, dir[:-1])
+save_data(summary, flag, dir[:-1], hue_order)
 
 # worst error
 files = sorted(find_dataset([dir], "error"))
 def worst_error(dat):
     return np.linalg.norm(dat.values[500:], axis=1).max()
-save_data(get_summary(files, worst_error), flag, dir[:-1])
+save_data(get_summary(files, worst_error), flag, dir[:-1], hue_order)
 
 # joint smoothness
 files = sorted(find_dataset([dir], "q"))
 def joint_smoothness(dat):
     return np.linalg.norm(np.diff(dat.values[500:], axis=0), axis=1).max()
-save_data(get_summary(files, joint_smoothness), flag, dir[:-1])
+save_data(get_summary(files, joint_smoothness), flag, dir[:-1], hue_order)
+
+# number of iterations
+files = sorted(find_dataset([dir], "time"))
+def iteration(dat):
+    return dat.loc[500:, "iter"].values.mean()
+save_data(get_summary(files, iteration), flag, dir[:-1], hue_order)
+
+# computational time
+def milliseconds(dat):
+    return dat.loc[500:, "time"].values.mean()
+save_data(get_summary(files, milliseconds), flag, dir[:-1], hue_order)

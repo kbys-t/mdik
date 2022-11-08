@@ -11,8 +11,24 @@ See [youtube](https://youtu.be/dO3ZcdEOb5E) and [arxiv](https://arxiv.org/abs/21
 ## Installation
 
 If you use anaconda, just run
-1. `conda env create -f pino.yaml`
-1. `conda activate pino`
+```bash
+conda env create -f mdik.yaml
+conda activate mdik
+```
+
+If you want to use qpsolvers with time limit,
+```bash
+git clone https://github.com/kbys-t/qpsolvers.git
+```
+
+If you want to use qpoases,
+```bash
+git clone https://github.com/stephane-caron/qpOASES.git
+cd qpOASES
+make
+pip install -e interfaces/python
+```
+If you get some errors, please check compile flags (especially when you try to install on mac).
 
 ## Usage
 
@@ -34,6 +50,5 @@ Or just run `bash test.bash`
     archivePrefix={arXiv},
     primaryClass={cs.RO},
     url={https://arxiv.org/abs/2101.07625},
-    note={(under review)},
 }
 ```
